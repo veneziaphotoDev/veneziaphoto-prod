@@ -1,0 +1,4 @@
+ALTER TABLE "Code"
+  ADD COLUMN "discountSnapshot" DOUBLE PRECISION,
+  ADD COLUMN "cashbackSnapshot" DOUBLE PRECISION;
+

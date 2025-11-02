@@ -1,0 +1,161 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+// Note that some adapters may set a maximum length for the String type by default, please ensure your strings are long
+// enough when changing adapters.
+// See https://www.prisma.io/docs/orm/reference/prisma-schema-reference#string for more information
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Session {
+  id            String    @id
+  shop          String
+  state         String
+  isOnline      Boolean   @default(false)
+  scope         String?
+  expires       DateTime?
+  accessToken   String
+  userId        BigInt?
+  firstName     String?
+  lastName      String?
+  email         String?
+  accountOwner  Boolean   @default(false)
+  locale        String?
+  collaborator  Boolean?  @default(false)
+  emailVerified Boolean?  @default(false)
+}
+
+model Referrer {
+  id                String     @id @default(cuid())
+  shopifyCustomerId String     @unique
+  email             String?
+  firstName         String?
+  lastName          String?
+  codes             Code[]
+  referrals         Referral[]
+  rewards           Reward[]
+  emailLogs         EmailLog[]
+  createdAt         DateTime   @default(now())
+  updatedAt         DateTime   @updatedAt
+}
+
+model Code {
+  id                   String     @id @default(cuid())
+  code                 String     @unique
+  referrer             Referrer   @relation(fields: [referrerId], references: [id])
+  referrerId           String
+  shopifyDiscountId    String?
+  discountSnapshot     Float?
+  cashbackSnapshot     Float?
+  usageCount           Int        @default(0)
+  maxUsage             Int        @default(0)
+  active               Boolean    @default(true)
+  createdAt            DateTime   @default(now())
+  updatedAt            DateTime   @updatedAt
+  expiresAt            DateTime?
+  originOrderId        String?
+  originOrderGid       String?
+  workshopProductId    String?
+  workshopProductTitle String?
+  workshopQuantity     Int        @default(1)
+  referrals            Referral[]
+  emailLogs            EmailLog[]
+}
+
+model Referral {
+  id                       String   @id @default(cuid())
+  referrer                 Referrer @relation(fields: [referrerId], references: [id])
+  referrerId               String
+  code                     Code?    @relation(fields: [codeId], references: [id])
+  codeId                   String?
+  refereeShopifyCustomerId String?
+  refereeEmail             String?
+  refereeFirstName         String?
+  refereeLastName          String?
+  orderId                  String?  @unique
+  workshopProductId        String?
+  workshopProductTitle     String?
+  reward                   Reward?  @relation("ReferralReward")
+  createdAt                DateTime @default(now())
+}
+
+model Reward {
+  id                   String       @id @default(cuid())
+  referrer             Referrer     @relation(fields: [referrerId], references: [id])
+  referrerId           String
+  referral             Referral?    @relation("ReferralReward", fields: [referralId], references: [id])
+  referralId           String?      @unique
+  amount               Float
+  currency             String       @default("EUR")
+  status               RewardStatus @default(PENDING)
+  notes                String?
+  workshopProductId    String?
+  workshopProductTitle String?
+  createdAt            DateTime     @default(now())
+  updatedAt            DateTime     @updatedAt
+  paidAt               DateTime?
+}
+
+model AppSetting {
+  id                     Int      @id
+  discountPercentage     Float    @default(0.1)
+  cashbackAmount         Float    @default(20)
+  codeValidityDays       Int      @default(30)
+  appliesOncePerCustomer Boolean  @default(true)
+  maxUsagePerCode        Int      @default(0)
+  maxRefundPercentage    Float    @default(1.0)
+  customerSegmentIds     String?
+  createdAt              DateTime @default(now())
+  updatedAt              DateTime @updatedAt
+}
+
+model EmailTemplate {
+  id          String   @id @default(cuid())
+  type        EmailTemplateType @unique
+  subject     String
+  bodyHtml    String   @db.Text
+  bodyText    String?  @db.Text
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+model EmailLog {
+  id           String          @id @default(cuid())
+  code         Code?           @relation(fields: [codeId], references: [id])
+  codeId       String?
+  referrer     Referrer        @relation(fields: [referrerId], references: [id])
+  referrerId   String
+  templateType EmailTemplateType
+  recipientEmail String
+  subject      String
+  status       EmailStatus     @default(PENDING)
+  resendId     String?
+  errorMessage String?
+  sentAt       DateTime?
+  createdAt    DateTime        @default(now())
+}
+
+enum RewardStatus {
+  PENDING
+  PAID
+  FAILED
+}
+
+enum EmailTemplateType {
+  CODE_PROMO
+  CASHBACK_CONFIRMATION
+  MANUAL_REFERRER_WELCOME
+  INSTRUCTIONS_FILLEULS
+}
+
+enum EmailStatus {
+  PENDING
+  SENT
+  FAILED
+}
