@@ -123,6 +123,15 @@ export async function getReferrerDetail(id: string) {
     include: {
       codes: {
         orderBy: { createdAt: "desc" },
+        include: {
+          emailLogs: {
+            where: {
+              templateType: "MANUAL_REFERRER_WELCOME",
+            },
+            orderBy: { createdAt: "desc" },
+            take: 1,
+          },
+        },
       },
       referrals: {
         orderBy: { createdAt: "desc" },
@@ -132,6 +141,12 @@ export async function getReferrerDetail(id: string) {
         },
       },
       rewards: {
+        orderBy: { createdAt: "desc" },
+      },
+      emailLogs: {
+        where: {
+          templateType: "MANUAL_REFERRER_WELCOME",
+        },
         orderBy: { createdAt: "desc" },
       },
     },

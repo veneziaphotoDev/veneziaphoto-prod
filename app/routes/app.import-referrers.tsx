@@ -1,5 +1,5 @@
 import { json, type ActionFunctionArgs, type LoaderFunctionArgs } from "@remix-run/node";
-import { Form, Link, useActionData, useNavigation } from "@remix-run/react";
+import { Form, Link, useActionData, useNavigation, useFetcher } from "@remix-run/react";
 import {
   Page,
   Card,
@@ -9,8 +9,9 @@ import {
   InlineStack,
   Text,
   DataTable,
+  ProgressBar,
 } from "@shopify/polaris";
-import { useState } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 
 import { authenticate } from "app/shopify.server";
 import { getOrCreateCustomerByEmail } from "app/services/customers.server";
@@ -42,22 +43,23 @@ type ImportResult = {
   errors: string[];
 };
 
-type ActionData =
+type ParseActionData =
   | {
+      action: "parse";
       success: true;
-      results: ImportResult[];
-      summary: {
-        total: number;
-        successful: number;
-        failed: number;
-        customersCreated: number;
-        referrersCreated: number;
-        codesCreated: number;
-        discountsCreated: number;
-        emailsSent: number;
-      };
+      rows: ImportRow[];
     }
-  | { success?: false; error: string };
+  | { action: "parse"; success?: false; error: string };
+
+type ProcessActionData =
+  | {
+      action: "process";
+      success: true;
+      result: ImportResult;
+    }
+  | { action: "process"; success?: false; error: string };
+
+type ActionData = ParseActionData | ProcessActionData;
 
 function parseCSV(csvText: string): ImportRow[] {
   const lines = csvText.trim().split("\n");
@@ -256,23 +258,42 @@ async function processReferrerRow(
     } else {
       code = codeRecord.code;
 
-      // Créer ou mettre à jour le discount Shopify
-      try {
-        const discount = await recreateShopifyDiscount({
-          code: codeRecord,
-          settings,
-          shopDomain: session?.shop,
-        });
+      // Créer ou mettre à jour le discount Shopify seulement si nécessaire
+      // Si le code existe déjà avec un discount, on essaie de le mettre à jour
+      // mais on ne considère pas cela comme une erreur critique si ça échoue
+      const needsDiscountUpdate = !codeRecord.shopifyDiscountId || !codeAlreadyExists;
+      
+      if (needsDiscountUpdate || !codeAlreadyExists) {
+        try {
+          const discount = await recreateShopifyDiscount({
+            code: codeRecord,
+            settings,
+            shopDomain: session?.shop,
+          });
 
-        if (discount) {
-          await linkShopifyDiscountId(codeRecord.id, discount.discountId);
-          discountCreated = true;
-        } else {
-          errors.push(codeAlreadyExists ? "Impossible de mettre à jour le discount Shopify." : "Impossible de créer le discount Shopify.");
+          if (discount) {
+            await linkShopifyDiscountId(codeRecord.id, discount.discountId);
+            discountCreated = true;
+          } else {
+            // Si le discount existe déjà, ce n'est pas une erreur critique
+            if (codeRecord.shopifyDiscountId) {
+              discountCreated = true; // On considère que c'est OK
+            } else {
+              errors.push(codeAlreadyExists ? "Impossible de mettre à jour le discount Shopify." : "Impossible de créer le discount Shopify.");
+            }
+          }
+        } catch (error) {
+          const message = error instanceof Error ? error.message : "Erreur lors de la création/mise à jour du discount Shopify.";
+          // Si le code existe déjà, on ne considère pas cela comme une erreur bloquante
+          if (!(codeAlreadyExists && codeRecord.shopifyDiscountId)) {
+            errors.push(message);
+          }
         }
-      } catch (error) {
-        const message = error instanceof Error ? error.message : "Erreur lors de la création/mise à jour du discount Shopify.";
-        errors.push(message);
+      } else {
+        // Le code et le discount existent déjà, on skip la mise à jour
+        if (codeRecord.shopifyDiscountId) {
+          discountCreated = true; // On considère que le discount existe
+        }
       }
 
       // Envoyer l'email de bienvenue
@@ -287,6 +308,7 @@ async function processReferrerRow(
             firstName: referrer.firstName,
             lastName: referrer.lastName,
             code: codeRecord.code,
+            codeId: codeRecord.id,
             expiresAt: codeRecord.expiresAt ?? undefined,
             discountPercentage: codeRecord.discountSnapshot ?? settings.discountPercentage,
             cashbackAmount: codeRecord.cashbackSnapshot ?? settings.cashbackAmount,
@@ -297,19 +319,33 @@ async function processReferrerRow(
           const message = emailError instanceof Error ? emailError.message : "Erreur inconnue lors de l'envoi de l'email.";
           errors.push(`Email non envoyé: ${message}`);
         }
-      } else if (shouldSendWelcome && !referrer.email) {
+      } else if (!referrer.email) {
         errors.push("Email du parrain manquant, impossible d'envoyer le message de bienvenue.");
       }
     }
 
-    const success = errors.length === 0;
-    const message = success
-      ? codeAlreadyExists
-        ? "Parrain déjà existant, code mis à jour."
-        : existingReferrerBefore
-          ? "Parrain existant, code généré."
-          : "Parrain créé et code généré."
-      : errors.join(" | ");
+    // Si le parrain et le code existent déjà, on ne considère pas cela comme une erreur
+    // mais plutôt comme un cas normal (parrain déjà dans le système)
+    // IMPORTANT: On utilise referrerCreated pour déterminer si c'est un nouveau parrain
+    // car existingReferrerBefore peut être null même si le parrain vient d'être créé dans un traitement précédent
+    const isExistingReferrer = !existingReferrerBefore && !referrerCreated ? false : !!(existingReferrerBefore && codeAlreadyExists);
+    const success: boolean = errors.length === 0 || isExistingReferrer;
+    
+    const message = errors.length === 0
+      ? !referrerCreated && existingReferrerBefore
+        ? codeAlreadyExists
+          ? "Parrain déjà existant, code et discount mis à jour."
+          : "Parrain existant, code généré."
+        : referrerCreated
+          ? codeCreated
+            ? "Parrain créé et code généré."
+            : "Parrain créé, code existant mis à jour."
+          : codeCreated
+            ? "Code créé pour le parrain."
+            : "Code mis à jour."
+      : isExistingReferrer
+        ? "Parrain déjà existant dans le système."
+        : errors.join(" | ");
 
     return {
       email: row.email,
@@ -349,89 +385,333 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 };
 
 export const action = async ({ request }: ActionFunctionArgs) => {
-  const { session } = await authenticate.admin(request);
+  // Lire le formData une seule fois avant l'authentification
   const formData = await request.formData();
-  const file = formData.get("csvFile") as File | null;
-
-  if (!file) {
-    return json<ActionData>({ error: "Aucun fichier CSV fourni." }, { status: 400 });
-  }
-
-  if (file.type !== "text/csv" && !file.name.endsWith(".csv")) {
-    return json<ActionData>({ error: "Le fichier doit être un fichier CSV." }, { status: 400 });
-  }
-
+  const actionType = formData.get("actionType") as string | null;
+  
+  let session;
   try {
-    // Lire le contenu du fichier
-    const csvText = await file.text();
-
-    // Parser le CSV
-    let rows: ImportRow[];
-    try {
-      rows = parseCSV(csvText);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "Erreur lors du parsing du CSV.";
-      return json<ActionData>({ error: message }, { status: 400 });
+    const authResult = await authenticate.admin(request);
+    session = authResult.session;
+  } catch (authError) {
+    if (actionType === "process") {
+      return json<ProcessActionData>(
+        { action: "process", error: "Erreur d'authentification. Veuillez vous reconnecter." },
+        { status: 401 }
+      );
     }
-
-    if (rows.length === 0) {
-      return json<ActionData>({ error: "Le fichier CSV ne contient aucune ligne de données valide." }, { status: 400 });
-    }
-
-    // Récupérer les paramètres
-    const settings = await getReferralSettings();
-
-    // Traiter chaque ligne
-    const results: ImportResult[] = [];
-    for (const row of rows) {
-      const result = await processReferrerRow(row, session, settings);
-      results.push(result);
-    }
-
-    // Calculer le résumé
-    const summary = {
-      total: results.length,
-      successful: results.filter((r) => r.success).length,
-      failed: results.filter((r) => !r.success).length,
-      customersCreated: results.filter((r) => r.customerCreated).length,
-      referrersCreated: results.filter((r) => r.referrerCreated).length,
-      codesCreated: results.filter((r) => r.codeCreated).length,
-      discountsCreated: results.filter((r) => r.discountCreated).length,
-      emailsSent: results.filter((r) => r.emailSent).length,
-    };
-
-    return json<ActionData>({
-      success: true,
-      results,
-      summary,
-    });
-  } catch (error) {
-    const message = error instanceof Error ? error.message : "Erreur inattendue lors de l'import.";
-    console.error("❌ Erreur lors de l'import CSV:", error);
-    return json<ActionData>({ error: message }, { status: 500 });
+    return json<ParseActionData>(
+      { action: "parse", error: "Erreur d'authentification. Veuillez vous reconnecter." },
+      { status: 401 }
+    );
   }
+  
+  // Action: Parser le CSV
+  if (actionType === "parse") {
+    const file = formData.get("csvFile") as File | null;
+
+    if (!file) {
+      return json<ParseActionData>({ action: "parse", error: "Aucun fichier CSV fourni." }, { status: 400 });
+    }
+
+    if (file.type !== "text/csv" && !file.name.endsWith(".csv")) {
+      return json<ParseActionData>({ action: "parse", error: "Le fichier doit être un fichier CSV." }, { status: 400 });
+    }
+
+    try {
+      // Lire le contenu du fichier
+      const csvText = await file.text();
+
+      // Parser le CSV
+      let rows: ImportRow[];
+      try {
+        rows = parseCSV(csvText);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Erreur lors du parsing du CSV.";
+        return json<ParseActionData>({ action: "parse", error: message }, { status: 400 });
+      }
+
+      if (rows.length === 0) {
+        return json<ParseActionData>({ action: "parse", error: "Le fichier CSV ne contient aucune ligne de données valide." }, { status: 400 });
+      }
+
+      return json<ParseActionData>({
+        action: "parse",
+        success: true,
+        rows,
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Erreur inattendue lors du parsing du CSV.";
+      console.error("❌ Erreur lors du parsing CSV:", error);
+      return json<ParseActionData>({ action: "parse", error: message }, { status: 500 });
+    }
+  }
+
+  // Action: Traiter un seul parrain
+  if (actionType === "process") {
+    const email = formData.get("email") as string | null;
+    const firstName = formData.get("firstName") as string | null;
+    const lastName = formData.get("lastName") as string | null;
+    const rowNumber = formData.get("rowNumber") as string | null;
+
+    if (!email) {
+      return json<ProcessActionData>({ action: "process", error: "L'email est obligatoire." }, { status: 400 });
+    }
+
+    try {
+      const settings = await getReferralSettings();
+
+      const row: ImportRow = {
+        email: email.trim().toLowerCase(),
+        firstName: firstName?.trim() || undefined,
+        lastName: lastName?.trim() || undefined,
+        rowNumber: rowNumber ? parseInt(rowNumber, 10) : 0,
+      };
+
+      const result = await processReferrerRow(row, session, settings);
+      
+      // Log concis pour la création des parrains
+      if (result.success) {
+        if (result.referrerCreated) {
+          console.log(`✅ Parrain créé: ${row.email}`);
+        } else if (result.codeCreated) {
+          console.log(`✅ Code créé pour: ${row.email}`);
+        }
+      }
+
+      return json<ProcessActionData>({
+        action: "process",
+        success: true,
+        result,
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Erreur inattendue lors du traitement.";
+      console.error(`❌ Erreur lors du traitement du parrain ${email}:`, error);
+      if (error instanceof Error && error.stack) {
+        console.error("Stack trace:", error.stack);
+      }
+      return json<ProcessActionData>({ action: "process", error: message }, { status: 500 });
+    }
+  }
+
+  return json<ActionData>({ action: "parse", error: "Action non reconnue." }, { status: 400 });
 };
 
 export default function ImportReferrersPage() {
   const actionData = useActionData<ActionData>();
   const navigation = useNavigation();
+  const parseFetcher = useFetcher<ActionData>();
+
   const [fileSelected, setFileSelected] = useState(false);
+  const [parsedRows, setParsedRows] = useState<ImportRow[]>([]);
+  const [results, setResults] = useState<Map<number, ImportResult>>(new Map());
+  const [isProcessing, setIsProcessing] = useState(false);
+  const [currentRowNumber, setCurrentRowNumber] = useState<number | null>(null);
 
-  const isSubmitting = navigation.state === "submitting";
+  const isSubmitting = navigation.state === "submitting" || parseFetcher.state !== "idle";
 
-  const tableRows = actionData && "results" in actionData
-    ? actionData.results.map((result) => [
-        result.email,
-        result.success ? "✅" : "❌",
-        result.message,
-        result.code || "—",
-        result.customerCreated ? "Oui" : "Non",
-        result.referrerCreated ? "Oui" : "Non",
-        result.codeCreated ? "Oui" : "Non",
-        result.discountCreated ? "Oui" : "Non",
-        result.emailSent ? "Oui" : "Non",
-      ])
-    : [];
+  // Gérer la réponse du parsing
+  useEffect(() => {
+    if (parseFetcher.data && "action" in parseFetcher.data && parseFetcher.data.action === "parse") {
+      if ("success" in parseFetcher.data && parseFetcher.data.success && "rows" in parseFetcher.data) {
+        setParsedRows(parseFetcher.data.rows);
+        setResults(new Map());
+        setCurrentRowNumber(null);
+        setIsProcessing(false);
+      }
+    }
+  }, [parseFetcher.data]);
+
+  const processFetcher = useFetcher<ProcessActionData>();
+  const [pendingRowIndex, setPendingRowIndex] = useState<number | null>(null);
+  const processedRowIndexRef = useRef<number | null>(null);
+  const submittedRowsRef = useRef<Set<number>>(new Set()); // Protection contre les doubles soumissions
+  const processedRowsRef = useRef<Set<number>>(new Set()); // Protection contre le retraitement de la même réponse
+
+  // Gérer les réponses et déclencher le traitement suivant
+  useEffect(() => {
+    // Si on vient de recevoir une réponse, la traiter
+    if (processFetcher.state === "idle" && processFetcher.data && processedRowIndexRef.current !== null) {
+      const rowIndex = processedRowIndexRef.current;
+      const row = parsedRows[rowIndex];
+      const data = processFetcher.data;
+      
+      // Protection : éviter de traiter la même réponse plusieurs fois
+      if (processedRowsRef.current.has(row.rowNumber)) {
+        // Réinitialiser quand même pour permettre le suivant
+        processedRowIndexRef.current = null;
+        // Passer au suivant immédiatement
+        if (rowIndex < parsedRows.length - 1) {
+          setTimeout(() => {
+            setPendingRowIndex(rowIndex + 1);
+          }, 100);
+        } else {
+          setIsProcessing(false);
+          setCurrentRowNumber(null);
+          setPendingRowIndex(null);
+          submittedRowsRef.current.clear();
+          processedRowsRef.current.clear();
+        }
+        return;
+      }
+      
+      processedRowsRef.current.add(row.rowNumber);
+      
+      // Retirer de la liste des soumissions en cours
+      submittedRowsRef.current.delete(row.rowNumber);
+      
+      if (data.action === "process" && "success" in data && data.success && "result" in data) {
+        setResults((prev) => {
+          // Double vérification : éviter d'écraser un résultat existant
+          if (prev.has(row.rowNumber)) {
+            return prev;
+          }
+          const newMap = new Map(prev);
+          newMap.set(row.rowNumber, data.result);
+          return newMap;
+        });
+      } else {
+        // En cas d'erreur, créer un résultat d'erreur
+        const errorResult: ImportResult = {
+          email: row.email,
+          success: false,
+          message: "error" in data ? data.error : "Erreur inconnue",
+          errors: ["error" in data ? data.error : "Erreur inconnue"],
+          customerCreated: false,
+          referrerCreated: false,
+          codeCreated: false,
+          discountCreated: false,
+          emailSent: false,
+        };
+        setResults((prev) => {
+          // Double vérification : éviter d'écraser un résultat existant
+          if (prev.has(row.rowNumber)) {
+            return prev;
+          }
+          const newMap = new Map(prev);
+          newMap.set(row.rowNumber, errorResult);
+          return newMap;
+        });
+      }
+      
+      // Réinitialiser la référence pour permettre le traitement suivant
+      processedRowIndexRef.current = null;
+      
+      // Traiter le suivant après un délai
+      if (rowIndex < parsedRows.length - 1) {
+        setTimeout(() => {
+          setPendingRowIndex(rowIndex + 1);
+        }, 1000);
+      } else {
+        // Tous les parrains ont été traités
+        setIsProcessing(false);
+        setCurrentRowNumber(null);
+        setPendingRowIndex(null);
+        submittedRowsRef.current.clear();
+        processedRowsRef.current.clear();
+      }
+    }
+    
+    // Si on a un index à traiter et que le fetcher est inactif, soumettre la requête
+    if (pendingRowIndex !== null && processFetcher.state === "idle" && pendingRowIndex < parsedRows.length && processedRowIndexRef.current === null) {
+      const row = parsedRows[pendingRowIndex];
+      
+      // Protection : ne pas soumettre si cette ligne a déjà été soumise OU déjà traitée
+      if (submittedRowsRef.current.has(row.rowNumber) || processedRowsRef.current.has(row.rowNumber)) {
+        console.log(`⏭️ Ligne ${row.rowNumber} (${row.email}) déjà traitée, passage au suivant`);
+        // Si déjà soumise ou traitée, passer au suivant
+        if (pendingRowIndex < parsedRows.length - 1) {
+          setTimeout(() => {
+            setPendingRowIndex(pendingRowIndex + 1);
+          }, 100);
+        } else {
+          // C'est le dernier, terminer
+          setIsProcessing(false);
+          setCurrentRowNumber(null);
+          setPendingRowIndex(null);
+          submittedRowsRef.current.clear();
+          processedRowsRef.current.clear();
+        }
+        return;
+      }
+      
+      console.log(`📤 Soumission ligne ${row.rowNumber} (${row.email})`);
+      setCurrentRowNumber(row.rowNumber);
+      processedRowIndexRef.current = pendingRowIndex; // Marquer comme en cours de traitement
+      submittedRowsRef.current.add(row.rowNumber); // Marquer comme soumise
+      
+      const formData = new FormData();
+      formData.append("actionType", "process");
+      formData.append("email", row.email);
+      if (row.firstName) formData.append("firstName", row.firstName);
+      if (row.lastName) formData.append("lastName", row.lastName);
+      formData.append("rowNumber", row.rowNumber.toString());
+      
+      processFetcher.submit(formData, {
+        method: "POST",
+        action: "/app/import-referrers",
+      });
+    }
+  }, [processFetcher.state, processFetcher.data, pendingRowIndex, parsedRows]);
+
+  // Traiter les parrains séquentiellement
+  const startProcessing = useCallback(() => {
+    if (parsedRows.length === 0 || isProcessing) return;
+
+    setIsProcessing(true);
+    setCurrentRowNumber(null);
+    setResults(new Map());
+    processedRowIndexRef.current = null;
+    submittedRowsRef.current.clear(); // Réinitialiser les soumissions
+    processedRowsRef.current.clear(); // Réinitialiser les réponses traitées
+    setPendingRowIndex(0); // Commencer par le premier
+  }, [parsedRows, isProcessing]);
+
+  // Calculer les statistiques
+  const processedCount = results.size;
+  const successfulCount = Array.from(results.values()).filter((r) => r.success).length;
+  const failedCount = processedCount - successfulCount;
+  const progress = parsedRows.length > 0 ? (processedCount / parsedRows.length) * 100 : 0;
+
+  // Préparer les lignes du tableau
+  const tableRows = parsedRows.map((row) => {
+    const result = results.get(row.rowNumber);
+    if (!result) {
+      const isCurrent = isProcessing && currentRowNumber === row.rowNumber;
+      return [
+        row.email,
+        isCurrent ? "⏳" : "⏸️",
+        isCurrent ? "Traitement en cours..." : "En attente",
+        "—",
+        "—",
+        "—",
+        "—",
+        "—",
+        "—",
+      ];
+    }
+    return [
+      result.email,
+      result.success ? "✅" : "❌",
+      result.message,
+      result.code || "—",
+      result.customerCreated ? "Oui" : "Non",
+      result.referrerCreated ? "Oui" : "Non",
+      result.codeCreated ? "Oui" : "Non",
+      result.discountCreated ? "Oui" : "Non",
+      result.emailSent ? "Oui" : "Non",
+    ];
+  });
+
+  const hasParseError = 
+    (actionData && "error" in actionData && actionData.error) ||
+    (parseFetcher.data && "action" in parseFetcher.data && parseFetcher.data.action === "parse" && "error" in parseFetcher.data);
+  
+  const parseError = 
+    (actionData && "error" in actionData ? actionData.error : null) ||
+    (parseFetcher.data && "action" in parseFetcher.data && parseFetcher.data.action === "parse" && "error" in parseFetcher.data ? parseFetcher.data.error : null);
+
+  const isComplete = parsedRows.length > 0 && processedCount === parsedRows.length && !isProcessing;
 
   return (
     <Page
@@ -439,43 +719,69 @@ export default function ImportReferrersPage() {
       backAction={{ content: "Ajouter un parrain", url: "/app/add-referrer" }}
     >
       <BlockStack gap="400">
-        {actionData && "error" in actionData && actionData.error ? (
-          <Banner tone="critical">{actionData.error}</Banner>
+        {hasParseError && parseError ? (
+          <Banner tone="critical">{parseError}</Banner>
         ) : null}
 
-        {actionData && "success" in actionData && actionData.success ? (
+        {parsedRows.length > 0 && (
           <BlockStack gap="400">
-            <Banner tone="success">
-              <BlockStack gap="200">
-                <Text as="p" variant="bodyMd" fontWeight="semibold">
-                  Import terminé
-                </Text>
-                <Text as="p" variant="bodySm">
-                  Total: {actionData.summary.total} | Réussis: {actionData.summary.successful} | Échecs: {actionData.summary.failed}
-                </Text>
-                <Text as="p" variant="bodySm" tone="subdued">
-                  Clients créés: {actionData.summary.customersCreated} | Parrains créés: {actionData.summary.referrersCreated} | Codes créés: {actionData.summary.codesCreated} | Discounts créés: {actionData.summary.discountsCreated} | Emails envoyés: {actionData.summary.emailsSent}
-                </Text>
+            <Card>
+              <BlockStack gap="400">
+                <BlockStack gap="200">
+                  <Text as="p" variant="bodyMd" fontWeight="semibold">
+                    Liste des parrains à créer ({parsedRows.length})
+                  </Text>
+                  {isProcessing && (
+                    <BlockStack gap="200">
+                      <Text as="p" variant="bodySm">
+                        Traitement en cours... {processedCount}/{parsedRows.length}
+                      </Text>
+                      <ProgressBar progress={progress} />
+                    </BlockStack>
+                  )}
+                  {isComplete && (
+                    <Banner tone={failedCount === 0 ? "success" : "warning"}>
+                      <BlockStack gap="200">
+                        <Text as="p" variant="bodyMd" fontWeight="semibold">
+                          Traitement terminé
+                        </Text>
+                        <Text as="p" variant="bodySm">
+                          Total: {parsedRows.length} | Réussis: {successfulCount} | Échecs: {failedCount}
+                        </Text>
+                        <Text as="p" variant="bodySm" tone="subdued">
+                          Clients créés: {Array.from(results.values()).filter((r) => r.customerCreated).length} | 
+                          Parrains créés: {Array.from(results.values()).filter((r) => r.referrerCreated).length} | 
+                          Codes créés: {Array.from(results.values()).filter((r) => r.codeCreated).length} | 
+                          Discounts créés: {Array.from(results.values()).filter((r) => r.discountCreated).length} | 
+                          Emails envoyés: {Array.from(results.values()).filter((r) => r.emailSent).length}
+                        </Text>
+                      </BlockStack>
+                    </Banner>
+                  )}
+                </BlockStack>
+
+                {tableRows.length > 0 && (
+                  <DataTable
+                    columnContentTypes={["text", "text", "text", "text", "text", "text", "text", "text", "text"]}
+                    headings={["Email", "Statut", "Message", "Code", "Client créé", "Parrain créé", "Code créé", "Discount créé", "Email envoyé"]}
+                    rows={tableRows}
+                  />
+                )}
+
+                {!isProcessing && parsedRows.length > 0 && processedCount === 0 && (
+                  <InlineStack align="end">
+                    <Button
+                      onClick={startProcessing}
+                      variant="primary"
+                    >
+                      Commencer la génération des parrains
+                    </Button>
+                  </InlineStack>
+                )}
               </BlockStack>
-            </Banner>
-
-            {actionData.summary.failed > 0 && (
-              <Banner tone="warning">
-                {actionData.summary.failed} ligne(s) ont échoué. Vérifiez les détails ci-dessous.
-              </Banner>
-            )}
-
-            {tableRows.length > 0 && (
-              <Card>
-                <DataTable
-                  columnContentTypes={["text", "text", "text", "text", "text", "text", "text", "text", "text"]}
-                  headings={["Email", "Statut", "Message", "Code", "Client créé", "Parrain créé", "Code créé", "Discount créé", "Email envoyé"]}
-                  rows={tableRows}
-                />
-              </Card>
-            )}
+            </Card>
           </BlockStack>
-        ) : null}
+        )}
 
         <Card>
           <BlockStack gap="400">
@@ -496,7 +802,7 @@ export default function ImportReferrersPage() {
               </code>
             </Text>
 
-            <Form method="post" encType="multipart/form-data">
+            <parseFetcher.Form method="post" encType="multipart/form-data">
               <BlockStack gap="300">
                 <input
                   type="file"
@@ -505,18 +811,19 @@ export default function ImportReferrersPage() {
                   onChange={(e) => setFileSelected(!!e.target.files?.[0])}
                   required
                 />
+                <input type="hidden" name="actionType" value="parse" />
                 <InlineStack align="end">
                   <Button
                     submit
                     variant="primary"
                     loading={isSubmitting}
-                    disabled={!fileSelected || isSubmitting}
+                    disabled={!fileSelected || isSubmitting || isProcessing}
                   >
-                    {isSubmitting ? "Import en cours..." : "Importer le CSV"}
+                    {isSubmitting ? "Parsing du CSV..." : "Importer le CSV"}
                   </Button>
                 </InlineStack>
               </BlockStack>
-            </Form>
+            </parseFetcher.Form>
           </BlockStack>
         </Card>
       </BlockStack>

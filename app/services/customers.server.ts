@@ -130,20 +130,56 @@ export async function getOrCreateCustomerByEmail(
   },
   shopDomain?: string | null,
 ): Promise<{ customer: ShopifyCustomer; created: boolean }> {
+  // Vérifier d'abord si le client existe déjà
   const existing = await findCustomerByEmail(input.email, shopDomain);
   if (existing) {
     return { customer: existing, created: false };
   }
 
-  const createdCustomer = await createCustomer(
-    {
-      email: input.email,
-      firstName: input.firstName ?? null,
-      lastName: input.lastName ?? null,
-    },
-    shopDomain,
-  );
+  // Essayer de créer le client
+  try {
+    const createdCustomer = await createCustomer(
+      {
+        email: input.email,
+        firstName: input.firstName ?? null,
+        lastName: input.lastName ?? null,
+      },
+      shopDomain,
+    );
 
-  return { customer: createdCustomer, created: true };
+    return { customer: createdCustomer, created: true };
+  } catch (error) {
+    // Si l'erreur indique que l'email est déjà pris, c'est probablement une race condition
+    // Réessayons de trouver le client (il a peut-être été créé entre-temps par un autre processus)
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    const isEmailTakenError = errorMessage.includes("Email has already been taken") || 
+                              errorMessage.includes("email:") ||
+                              errorMessage.toLowerCase().includes("email");
+    
+    if (isEmailTakenError) {
+      // Faire plusieurs tentatives avec délai croissant (Shopify peut mettre du temps à indexer)
+      // On fait jusqu'à 5 tentatives avec des délais de plus en plus longs
+      for (let attempt = 0; attempt < 5; attempt++) {
+        const delay = 300 * (attempt + 1); // 300ms, 600ms, 900ms, 1200ms, 1500ms
+        await new Promise((resolve) => setTimeout(resolve, delay));
+        
+        const retryExisting = await findCustomerByEmail(input.email, shopDomain);
+        if (retryExisting) {
+          // Client trouvé après race condition, tout va bien
+          return { customer: retryExisting, created: false };
+        }
+      }
+      // Si après 5 tentatives on ne trouve toujours pas, c'est étrange mais on continue quand même
+      // car le client existe (l'erreur le confirme), on va juste réessayer une dernière fois
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+      const finalRetry = await findCustomerByEmail(input.email, shopDomain);
+      if (finalRetry) {
+        return { customer: finalRetry, created: false };
+      }
+    }
+    
+    // Si on n'a toujours pas trouvé le client après plusieurs tentatives, relancer l'erreur
+    throw error;
+  }
 }
 

@@ -27,6 +27,7 @@ import { getReferralSettings } from "app/services/settings.server";
 import { fetchShopifyDiscountDetails, recreateShopifyDiscount } from "app/services/discounts.server";
 import prisma from "app/db.server";
 import { listOrdersForCustomer, type SimplifiedOrder } from "app/services/orders.server";
+import { sendManualReferrerWelcomeEmail } from "app/services/email.server";
 
 const dateFormatter = new Intl.DateTimeFormat("fr-FR", {
   dateStyle: "medium",
@@ -66,20 +67,25 @@ type LoaderData = {
         maxRefund: number | null;
         percentage: number;
       } | null;
-    shopifyDiscount: {
-      percentage: number | null;
-      amountValue: number | null;
-      amountCurrencyCode: string | null;
-      usageLimit: number | null;
-      appliesOncePerCustomer: boolean | null;
-      startsAt: string | null;
-      endsAt: string | null;
-      status: string | null;
-    } | null;
-    snapshots: {
-      discount: number | null;
-      cashback: number | null;
-    };
+      shopifyDiscount: {
+        percentage: number | null;
+        amountValue: number | null;
+        amountCurrencyCode: string | null;
+        usageLimit: number | null;
+        appliesOncePerCustomer: boolean | null;
+        startsAt: string | null;
+        endsAt: string | null;
+        status: string | null;
+      } | null;
+      snapshots: {
+        discount: number | null;
+        cashback: number | null;
+      };
+      emailStatus: {
+        status: "SENT" | "PENDING" | "FAILED" | null;
+        sentAt: string | null;
+        errorMessage: string | null;
+      } | null;
     }>;
     referrals: Array<{
       id: string;
@@ -105,6 +111,11 @@ type LoaderData = {
       createdAt: string;
       paidAt: string | null;
     }>;
+    latestWelcomeEmail: {
+      status: "SENT" | "PENDING" | "FAILED" | null;
+      sentAt: string | null;
+      errorMessage: string | null;
+    } | null;
   };
   flash: { type: "success" | "error"; message: string } | null;
   orders: SimplifiedOrder[];
@@ -155,6 +166,15 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
         ? discountDetailsMap[code.shopifyDiscountId] ?? null
         : null;
 
+      const latestEmailLog = code.emailLogs?.[0] ?? null;
+      const emailStatus = latestEmailLog
+        ? {
+          status: latestEmailLog.status as "SENT" | "PENDING" | "FAILED",
+          sentAt: latestEmailLog.sentAt ? latestEmailLog.sentAt.toISOString() : null,
+          errorMessage: latestEmailLog.errorMessage ?? null,
+        }
+        : null;
+
       if (!code.originOrderGid) {
         return {
           id: code.id,
@@ -172,6 +192,7 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
             discount: code.discountSnapshot ?? null,
             cashback: code.cashbackSnapshot ?? null,
           },
+          emailStatus,
         };
       }
 
@@ -200,6 +221,7 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
           discount: code.discountSnapshot ?? null,
           cashback: code.cashbackSnapshot ?? null,
         },
+        emailStatus,
       };
     })
   );
@@ -207,6 +229,16 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
   const orders = referrer.shopifyCustomerId
     ? await listOrdersForCustomer(referrer.shopifyCustomerId, session?.shop, { limit: 20 })
     : [];
+
+  // Récupérer le dernier email de bienvenue global
+  const latestWelcomeEmailLog = referrer.emailLogs?.[0] ?? null;
+  const latestWelcomeEmail = latestWelcomeEmailLog
+    ? {
+      status: latestWelcomeEmailLog.status as "SENT" | "PENDING" | "FAILED",
+      sentAt: latestWelcomeEmailLog.sentAt ? latestWelcomeEmailLog.sentAt.toISOString() : null,
+      errorMessage: latestWelcomeEmailLog.errorMessage ?? null,
+    }
+    : null;
 
   return json<LoaderData>({
     referrer: {
@@ -242,6 +274,7 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
         createdAt: reward.createdAt.toISOString(),
         paidAt: reward.paidAt ? reward.paidAt.toISOString() : null,
       })),
+      latestWelcomeEmail,
     },
     flash: hasSuccess
       ? { type: "success", message: "Refund accepté et envoyé." }
@@ -347,6 +380,67 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
         error instanceof Error
           ? error.message
           : "Erreur inattendue lors de la synchronisation du discount.";
+      if (isFetcherRequest) {
+        return json<ActionData>({ error: message }, { status: 400 });
+      }
+      return redirect(`/app/parrain/${referrerId}?error=${encodeURIComponent(message)}`);
+    }
+  }
+
+  if (intent === "resend-welcome-email") {
+    try {
+      const referrer = await getReferrerDetail(referrerId);
+      if (!referrer) {
+        const message = "Parrain introuvable.";
+        if (isFetcherRequest) {
+          return json<ActionData>({ error: message }, { status: 404 });
+        }
+        return redirect(`/app/referrers?error=${encodeURIComponent(message)}`);
+      }
+
+      if (!referrer.email) {
+        const message = "Aucun email associé à ce parrain.";
+        if (isFetcherRequest) {
+          return json<ActionData>({ error: message }, { status: 400 });
+        }
+        return redirect(`/app/parrain/${referrerId}?error=${encodeURIComponent(message)}`);
+      }
+
+      // Récupérer le dernier code du parrain
+      const latestCode = referrer.codes[0];
+      if (!latestCode) {
+        const message = "Aucun code de parrainage trouvé pour ce parrain.";
+        if (isFetcherRequest) {
+          return json<ActionData>({ error: message }, { status: 400 });
+        }
+        return redirect(`/app/parrain/${referrerId}?error=${encodeURIComponent(message)}`);
+      }
+
+      const settings = await getReferralSettings();
+      const shopUrl = session?.shop ? `https://${session.shop}` : undefined;
+
+      await sendManualReferrerWelcomeEmail({
+        referrerId: referrer.id,
+        referrerEmail: referrer.email,
+        firstName: referrer.firstName,
+        lastName: referrer.lastName,
+        code: latestCode.code,
+        codeId: latestCode.id,
+        expiresAt: latestCode.expiresAt ?? undefined,
+        discountPercentage: latestCode.discountSnapshot ?? settings.discountPercentage,
+        cashbackAmount: latestCode.cashbackSnapshot ?? settings.cashbackAmount,
+        shopUrl,
+      });
+
+      if (isFetcherRequest) {
+        return json<ActionData>({ success: true });
+      }
+      return redirect(`/app/parrain/${referrerId}?success=1`);
+    } catch (error) {
+      const message =
+        error instanceof Error
+          ? error.message
+          : "Erreur inattendue lors de l'envoi de l'email.";
       if (isFetcherRequest) {
         return json<ActionData>({ error: message }, { status: 400 });
       }
@@ -606,6 +700,7 @@ export default function ReferrerDetail() {
   const { referrer, flash, orders, settings } = useLoaderData<typeof loader>();
   const refundFetcher = useFetcher<ActionData>();
   const discountSyncFetcher = useFetcher<ActionData>();
+  const resendEmailFetcher = useFetcher<ActionData>();
   const isModalSubmitting = refundFetcher.state === "submitting";
   const [activeRewardId, setActiveRewardId] = useState<string | null>(null);
   const [selectedOrderGid, setSelectedOrderGid] = useState<string | null>(null);
@@ -641,7 +736,7 @@ export default function ReferrerDetail() {
 
       const appliesOnceAligned =
         code.shopifyDiscount?.appliesOncePerCustomer === null ||
-        code.shopifyDiscount?.appliesOncePerCustomer === undefined
+          code.shopifyDiscount?.appliesOncePerCustomer === undefined
           ? null
           : code.shopifyDiscount.appliesOncePerCustomer === settings.appliesOncePerCustomer;
 
@@ -740,6 +835,14 @@ export default function ReferrerDetail() {
     }
   }, [discountSyncFetcher.state, discountSyncFetcher.data]);
 
+  useEffect(() => {
+    if (resendEmailFetcher.state === "idle" && resendEmailFetcher.data) {
+      if ("success" in resendEmailFetcher.data && resendEmailFetcher.data.success) {
+        window.location.reload();
+      }
+    }
+  }, [resendEmailFetcher.state, resendEmailFetcher.data]);
+
   return (
     <Page
       title={`Parrain : ${referrer.name}`}
@@ -770,6 +873,66 @@ export default function ReferrerDetail() {
                 <Text as="p">Email : {referrer.email ?? "—"}</Text>
                 <Text as="p">Client Shopify : {referrer.shopifyCustomerId}</Text>
                 <Text as="p">Créé le : {dateFormatter.format(new Date(referrer.createdAt))}</Text>
+                <BlockStack gap="200">
+                  <InlineStack gap="200" align="start" blockAlign="center">
+                    <Text as="p" variant="bodyMd">
+                      Email de bienvenue :
+                    </Text>
+                    {referrer.latestWelcomeEmail ? (
+                      <>
+                        <Badge
+                          tone={
+                            referrer.latestWelcomeEmail.status === "SENT"
+                              ? "success"
+                              : referrer.latestWelcomeEmail.status === "PENDING"
+                                ? "attention"
+                                : "critical"
+                          }
+                        >
+                          {referrer.latestWelcomeEmail.status === "SENT"
+                            ? "Email envoyé"
+                            : referrer.latestWelcomeEmail.status === "PENDING"
+                              ? "En attente"
+                              : "Échec"}
+                        </Badge>
+                        {referrer.latestWelcomeEmail.sentAt && (
+                          <Text as="p" variant="bodySm" tone="subdued">
+                            le {dateFormatter.format(new Date(referrer.latestWelcomeEmail.sentAt))}
+                          </Text>
+                        )}
+                        {referrer.latestWelcomeEmail.errorMessage && (
+                          <Text as="p" variant="bodySm" tone="critical">
+                            {referrer.latestWelcomeEmail.errorMessage}
+                          </Text>
+                        )}
+                      </>
+                    ) : (
+                      <Badge>Jamais envoyé</Badge>
+                    )}
+                  </InlineStack>
+                  {referrer.email && (
+                    <InlineStack gap="200">
+                      <resendEmailFetcher.Form method="post">
+                        <input type="hidden" name="intent" value="resend-welcome-email" />
+                        <Button
+                          submit
+                          variant="secondary"
+                          loading={resendEmailFetcher.state !== "idle"}
+                          disabled={resendEmailFetcher.state !== "idle"}
+                        >
+                          {resendEmailFetcher.state !== "idle"
+                            ? "Envoi en cours..."
+                            : "Renvoyer l'email de bienvenue"}
+                        </Button>
+                      </resendEmailFetcher.Form>
+                      {resendEmailFetcher.data && "error" in resendEmailFetcher.data && (
+                        <Banner tone="critical" onDismiss={() => { }}>
+                          {resendEmailFetcher.data.error}
+                        </Banner>
+                      )}
+                    </InlineStack>
+                  )}
+                </BlockStack>
               </div>
               <Form
                 method="post"
@@ -795,7 +958,7 @@ export default function ReferrerDetail() {
             </BlockStack>
           </Card>
         </Layout.Section>
-        
+
         <Layout.Section>
           <Card>
             <BlockStack gap="200">
@@ -804,89 +967,89 @@ export default function ReferrerDetail() {
                   {discountError}
                 </Banner>
               )}
-            <IndexTable
-              resourceName={{ singular: "code", plural: "codes" }}
-              itemCount={referrer.codes.length}
-              headings={[
-                { title: "Code" },
-                { title: "Workshop" },
-                { title: "Créé le" },
-                { title: "Expiration" },
-                { title: "Utilisations" },
-                { title: "Progression refund" },
-                { title: "Statut" },
-                { title: "Actions" },
-              ]}
-              selectable={false}
-            >
-              {referrer.codes.map((code, index) => {
-                const status = getCodeStatus(code);
+              <IndexTable
+                resourceName={{ singular: "code", plural: "codes" }}
+                itemCount={referrer.codes.length}
+                headings={[
+                  { title: "Code" },
+                  { title: "Workshop" },
+                  { title: "Créé le" },
+                  { title: "Expiration" },
+                  { title: "Utilisations" },
+                  { title: "Progression refund" },
+                  { title: "Statut" },
+                  { title: "Actions" },
+                ]}
+                selectable={false}
+              >
+                {referrer.codes.map((code, index) => {
+                  const status = getCodeStatus(code);
 
-                return (
-                <IndexTable.Row id={code.id} key={code.id} position={index}>
-                  <IndexTable.Cell>
-                    <Text variant="bodyMd" fontWeight="bold" as="span">
-                      {code.code}
-                    </Text>
-                  </IndexTable.Cell>
-                  <IndexTable.Cell>
-                    {code.workshopProductTitle ?? "—"}
-                  </IndexTable.Cell>
-                  <IndexTable.Cell>
-                    {dateFormatter.format(new Date(code.createdAt))}
-                  </IndexTable.Cell>
-                  <IndexTable.Cell>
-                    {code.expiresAt ? dateFormatter.format(new Date(code.expiresAt)) : "—"}
-                  </IndexTable.Cell>
-                  <IndexTable.Cell>
-                    {code.maxUsage > 0 ? `${code.usageCount} / ${code.maxUsage}` : code.usageCount}
-                  </IndexTable.Cell>
-                  <IndexTable.Cell>
-                    {code.refundProgress ? (
-                      <BlockStack gap="200">
-                        <Text variant="bodySm" as="span">
-                          {code.refundProgress.percentage.toFixed(1)}%
+                  return (
+                    <IndexTable.Row id={code.id} key={code.id} position={index}>
+                      <IndexTable.Cell>
+                        <Text variant="bodyMd" fontWeight="bold" as="span">
+                          {code.code}
                         </Text>
-                        <ProgressBar
-                          progress={code.refundProgress.percentage}
-                          size="small"
-                        />
-                        {code.refundProgress.maxRefund && (
-                          <Text variant="bodySm" as="p" tone="subdued">
-                            {currencyFormatter.format(code.refundProgress.refunded)} / {currencyFormatter.format(code.refundProgress.maxRefund)}
-                          </Text>
+                      </IndexTable.Cell>
+                      <IndexTable.Cell>
+                        {code.workshopProductTitle ?? "—"}
+                      </IndexTable.Cell>
+                      <IndexTable.Cell>
+                        {dateFormatter.format(new Date(code.createdAt))}
+                      </IndexTable.Cell>
+                      <IndexTable.Cell>
+                        {code.expiresAt ? dateFormatter.format(new Date(code.expiresAt)) : "—"}
+                      </IndexTable.Cell>
+                      <IndexTable.Cell>
+                        {code.maxUsage > 0 ? `${code.usageCount} / ${code.maxUsage}` : code.usageCount}
+                      </IndexTable.Cell>
+                      <IndexTable.Cell>
+                        {code.refundProgress ? (
+                          <BlockStack gap="200">
+                            <Text variant="bodySm" as="span">
+                              {code.refundProgress.percentage.toFixed(1)}%
+                            </Text>
+                            <ProgressBar
+                              progress={code.refundProgress.percentage}
+                              size="small"
+                            />
+                            {code.refundProgress.maxRefund && (
+                              <Text variant="bodySm" as="p" tone="subdued">
+                                {currencyFormatter.format(code.refundProgress.refunded)} / {currencyFormatter.format(code.refundProgress.maxRefund)}
+                              </Text>
+                            )}
+                          </BlockStack>
+                        ) : (
+                          "—"
                         )}
-                      </BlockStack>
-                    ) : (
-                      "—"
-                    )}
-                  </IndexTable.Cell>
-                  <IndexTable.Cell>
-                    <BlockStack gap="100">
-                      <InlineStack gap="100" align="start" blockAlign="center">
-                        <Badge tone={status.badgeTone}>{status.badgeLabel}</Badge>
-                      </InlineStack>
-                      <Text variant="bodySm" tone="subdued" as="span">
-                        {status.summary}
-                      </Text>
-                    </BlockStack>
-                  </IndexTable.Cell>
-                  <IndexTable.Cell>
-                    <Button
-                      variant="secondary"
-                      size="slim"
-                      onClick={() => {
-                        setDetailCodeId(code.id);
-                        setDiscountError(null);
-                      }}
-                    >
-                      Détails
-                    </Button>
-                  </IndexTable.Cell>
-                </IndexTable.Row>
-                );
-              })}
-            </IndexTable>
+                      </IndexTable.Cell>
+                      <IndexTable.Cell>
+                        <BlockStack gap="100">
+                          <InlineStack gap="100" align="start" blockAlign="center">
+                            <Badge tone={status.badgeTone}>{status.badgeLabel}</Badge>
+                          </InlineStack>
+                          <Text variant="bodySm" tone="subdued" as="span">
+                            {status.summary}
+                          </Text>
+                        </BlockStack>
+                      </IndexTable.Cell>
+                      <IndexTable.Cell>
+                        <Button
+                          variant="secondary"
+                          size="slim"
+                          onClick={() => {
+                            setDetailCodeId(code.id);
+                            setDiscountError(null);
+                          }}
+                        >
+                          Détails
+                        </Button>
+                      </IndexTable.Cell>
+                    </IndexTable.Row>
+                  );
+                })}
+              </IndexTable>
             </BlockStack>
           </Card>
         </Layout.Section>
@@ -962,14 +1125,14 @@ export default function ReferrerDetail() {
           primaryAction={
             detailStatus?.needsSync
               ? {
-                  content: "Aligner sur les paramètres",
-                  onAction: () => handleSyncDiscount(detailCode.id),
-                  loading:
-                    syncingCodeId === detailCode.id && discountSyncFetcher.state !== "idle",
-                  disabled:
-                    discountSyncFetcher.state !== "idle" &&
-                    syncingCodeId !== detailCode.id,
-                }
+                content: "Aligner sur les paramètres",
+                onAction: () => handleSyncDiscount(detailCode.id),
+                loading:
+                  syncingCodeId === detailCode.id && discountSyncFetcher.state !== "idle",
+                disabled:
+                  discountSyncFetcher.state !== "idle" &&
+                  syncingCodeId !== detailCode.id,
+              }
               : undefined
           }
           secondaryActions={[
@@ -982,7 +1145,7 @@ export default function ReferrerDetail() {
           <Modal.Section>
             <BlockStack gap="300">
               <InlineStack gap="200" align="start" blockAlign="center">
-                <Badge tone={detailStatus?.badgeTone ?? "subdued"}>
+                <Badge tone={detailStatus?.badgeTone ?? "critical"} >
                   {detailStatus?.badgeLabel ?? "Informations indisponibles"}
                 </Badge>
                 {detailStatus?.summary ? (
@@ -1002,31 +1165,30 @@ export default function ReferrerDetail() {
                 <Text as="h3" variant="headingSm">
                   Remise filleul
                 </Text>
-                <Text variant="bodyMd">
+                <Text variant="bodyMd" as="p">
                   Shopify :{" "}
                   {detailCode.shopifyDiscount?.percentage !== null &&
-                  detailCode.shopifyDiscount?.percentage !== undefined
+                    detailCode.shopifyDiscount?.percentage !== undefined
                     ? percentageFormatter.format(detailCode.shopifyDiscount.percentage)
                     : detailCode.shopifyDiscount?.amountValue !== null &&
-                        detailCode.shopifyDiscount?.amountValue !== undefined
-                      ? `${currencyFormatter.format(detailCode.shopifyDiscount.amountValue)}${
-                          detailCode.shopifyDiscount?.amountCurrencyCode
-                            ? ` ${detailCode.shopifyDiscount.amountCurrencyCode}`
-                            : ""
-                        }`
+                      detailCode.shopifyDiscount?.amountValue !== undefined
+                      ? `${currencyFormatter.format(detailCode.shopifyDiscount.amountValue)}${detailCode.shopifyDiscount?.amountCurrencyCode
+                        ? ` ${detailCode.shopifyDiscount.amountCurrencyCode}`
+                        : ""
+                      }`
                       : "—"}
                 </Text>
-                <Text variant="bodySm" tone="subdued">
+                <Text variant="bodySm" tone="subdued" as="p">
                   Paramètre global : {percentageFormatter.format(settings.discountPercentage)}
                 </Text>
                 {detailCode.snapshots.discount !== null &&
-                detailCode.snapshots.discount !== undefined ? (
-                  <Text variant="bodySm" tone="subdued">
+                  detailCode.snapshots.discount !== undefined ? (
+                  <Text variant="bodySm" tone="subdued" as="p">
                     Valeur initiale : {percentageFormatter.format(detailCode.snapshots.discount)}
                   </Text>
                 ) : null}
                 {!detailCode.shopifyDiscount && (
-                  <Text variant="bodySm" tone="critical">
+                  <Text variant="bodySm" tone="critical" as="p">
                     Ce code n'est pas lié à un discount Shopify actif.
                   </Text>
                 )}
@@ -1036,20 +1198,20 @@ export default function ReferrerDetail() {
                 <Text as="h3" variant="headingSm">
                   Usage et limites
                 </Text>
-                <Text variant="bodyMd">
+                <Text variant="bodyMd" as="p">
                   Usage max Shopify :{" "}
                   {detailStatus?.maxUsageShopify !== null &&
-                  detailStatus?.maxUsageShopify !== undefined
+                    detailStatus?.maxUsageShopify !== undefined
                     ? detailStatus.maxUsageShopify
                     : "Illimité"}
                 </Text>
-                <Text variant="bodySm" tone="subdued">
+                <Text variant="bodySm" tone="subdued" as="p">
                   Paramètre global :{" "}
                   {settings.maxUsagePerCode > 0 ? settings.maxUsagePerCode : "Illimité"}
                 </Text>
                 {detailCode.shopifyDiscount?.appliesOncePerCustomer !== null &&
-                detailCode.shopifyDiscount?.appliesOncePerCustomer !== undefined ? (
-                  <Text variant="bodySm" tone="subdued">
+                  detailCode.shopifyDiscount?.appliesOncePerCustomer !== undefined ? (
+                  <Text variant="bodySm" tone="subdued" as="p">
                     Limite par client Shopify :{" "}
                     {detailCode.shopifyDiscount.appliesOncePerCustomer ? "Oui" : "Non"} (paramètre :{" "}
                     {settings.appliesOncePerCustomer ? "Oui" : "Non"})
@@ -1061,14 +1223,14 @@ export default function ReferrerDetail() {
                 <Text as="h3" variant="headingSm">
                   Cashback parrain
                 </Text>
-                <Text variant="bodyMd">
+                <Text variant="bodyMd" as="p">
                   Historique code :{" "}
                   {detailCode.snapshots.cashback !== null &&
-                  detailCode.snapshots.cashback !== undefined
+                    detailCode.snapshots.cashback !== undefined
                     ? currencyFormatter.format(detailCode.snapshots.cashback)
                     : "—"}
                 </Text>
-                <Text variant="bodySm" tone="subdued">
+                <Text variant="bodySm" tone="subdued" as="p">
                   Paramètre global : {currencyFormatter.format(settings.cashbackAmount)}
                 </Text>
               </BlockStack>
@@ -1077,16 +1239,16 @@ export default function ReferrerDetail() {
                 <Text as="h3" variant="headingSm">
                   Infos Shopify
                 </Text>
-                <Text variant="bodySm" tone="subdued">
+                <Text variant="bodySm" tone="subdued" as="p">
                   Statut : {detailCode.shopifyDiscount?.status ?? "—"}
                 </Text>
-                <Text variant="bodySm" tone="subdued">
+                <Text variant="bodySm" tone="subdued" as="p">
                   Début :{" "}
                   {detailCode.shopifyDiscount?.startsAt
                     ? dateFormatter.format(new Date(detailCode.shopifyDiscount.startsAt))
                     : "—"}
                 </Text>
-                <Text variant="bodySm" tone="subdued">
+                <Text variant="bodySm" tone="subdued" as="p">
                   Fin :{" "}
                   {detailCode.shopifyDiscount?.endsAt
                     ? dateFormatter.format(new Date(detailCode.shopifyDiscount.endsAt))

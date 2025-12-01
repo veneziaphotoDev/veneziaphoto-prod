@@ -583,6 +583,7 @@ type SendManualReferrerWelcomeEmailParams = {
     firstName?: string | null;
     lastName?: string | null;
     code: string;
+    codeId?: string | null;
     expiresAt?: Date | null;
     discountPercentage: number;
     cashbackAmount: number;
@@ -595,6 +596,7 @@ export async function sendManualReferrerWelcomeEmail({
     firstName,
     lastName,
     code,
+    codeId,
     expiresAt,
     discountPercentage,
     cashbackAmount,
@@ -643,5 +645,6 @@ export async function sendManualReferrerWelcomeEmail({
             logoAlt: DEFAULT_LOGO_ALT,
         },
         referrerId,
+        codeId: codeId ?? undefined,
     });
 }

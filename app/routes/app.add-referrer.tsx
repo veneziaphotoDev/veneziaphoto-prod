@@ -184,6 +184,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
             firstName: referrer.firstName,
             lastName: referrer.lastName,
             code: codeRecord.code,
+            codeId: codeRecord.id,
             expiresAt: codeRecord.expiresAt ?? undefined,
             discountPercentage: codeRecord.discountSnapshot ?? settings.discountPercentage,
             cashbackAmount: codeRecord.cashbackSnapshot ?? settings.cashbackAmount,
