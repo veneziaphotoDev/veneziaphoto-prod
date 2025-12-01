@@ -9,6 +9,7 @@ import {
   Banner,
   InlineStack,
   Text,
+  Checkbox,
 } from "@shopify/polaris";
 import { useEffect, useState } from "react";
 
@@ -68,10 +69,12 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   const firstNameRaw = formData.get("firstName");
   const lastNameRaw = formData.get("lastName");
   const emailRaw = formData.get("email");
+  const acceptsMarketingRaw = formData.get("acceptsMarketing");
 
   const firstName = typeof firstNameRaw === "string" ? firstNameRaw.trim() : "";
   const lastName = typeof lastNameRaw === "string" ? lastNameRaw.trim() : "";
   const emailError = validateEmail(typeof emailRaw === "string" ? emailRaw : null);
+  const acceptsMarketing = acceptsMarketingRaw === "true" || acceptsMarketingRaw === "on" || acceptsMarketingRaw === null;
 
   if (emailError) {
     return json<ActionData>({ error: emailError }, { status: 400 });
@@ -85,6 +88,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
         email,
         firstName: firstName || null,
         lastName: lastName || null,
+        acceptsMarketing,
       },
       session?.shop,
     );
@@ -241,6 +245,7 @@ export default function AddReferrerPage() {
   const [firstName, setFirstName] = useState("");
   const [lastName, setLastName] = useState("");
   const [email, setEmail] = useState("");
+  const [acceptsMarketing, setAcceptsMarketing] = useState(true);
 
   const isSubmitting = navigation.state === "submitting";
 
@@ -249,6 +254,7 @@ export default function AddReferrerPage() {
       setFirstName("");
       setLastName("");
       setEmail("");
+      setAcceptsMarketing(true);
     }
   }, [actionData]);
 
@@ -337,6 +343,12 @@ export default function AddReferrerPage() {
                 value={email}
                 onChange={setEmail}
                 requiredIndicator
+              />
+              <Checkbox
+                label="Accepter l'inscription à la newsletter"
+                name="acceptsMarketing"
+                checked={acceptsMarketing}
+                onChange={setAcceptsMarketing}
               />
               <InlineStack align="end">
                 <Button

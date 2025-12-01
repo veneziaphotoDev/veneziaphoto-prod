@@ -72,6 +72,7 @@ export async function createCustomer(
     email: string;
     firstName?: string | null;
     lastName?: string | null;
+    acceptsMarketing?: boolean;
   },
   shopDomain?: string | null,
 ): Promise<ShopifyCustomer> {
@@ -90,6 +91,10 @@ export async function createCustomer(
         email: input.email,
         firstName: input.firstName ?? undefined,
         lastName: input.lastName ?? undefined,
+        emailMarketingConsent: {
+          marketingState: (input.acceptsMarketing ?? true) ? "SUBSCRIBED" : "NOT_SUBSCRIBED",
+          marketingOptInLevel: "SINGLE_OPT_IN",
+        },
       },
     },
     shopDomain,
@@ -127,6 +132,7 @@ export async function getOrCreateCustomerByEmail(
     email: string;
     firstName?: string | null;
     lastName?: string | null;
+    acceptsMarketing?: boolean;
   },
   shopDomain?: string | null,
 ): Promise<{ customer: ShopifyCustomer; created: boolean }> {
@@ -143,6 +149,7 @@ export async function getOrCreateCustomerByEmail(
         email: input.email,
         firstName: input.firstName ?? null,
         lastName: input.lastName ?? null,
+        acceptsMarketing: input.acceptsMarketing ?? true,
       },
       shopDomain,
     );

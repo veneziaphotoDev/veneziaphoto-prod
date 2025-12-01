@@ -7,87 +7,87 @@ import { Resend } from "resend";
 const resend = new Resend(process.env.RESEND_API_KEY);
 
 const DEFAULT_LOGO_URL =
-    "https://veneziaphoto.myshopify.com/cdn/shop/files/logo--to-replace_b27e332b-e510-4edf-a148-a60c4fcecf48.svg?v=1762347140&width=261";
+  "https://veneziaphoto.myshopify.com/cdn/shop/files/logo--to-replace_b27e332b-e510-4edf-a148-a60c4fcecf48.svg?v=1762347140&width=261";
 const DEFAULT_LOGO_ALT = "Venezia Photo";
 
 export type TemplateVariables = {
-    firstName?: string | null;
-    lastName?: string | null;
-    code?: string;
-    workshopTitle?: string | null;
-    workshopQuantity?: number | string;
-    expiresAt?: string | null;
-    discountPercentage?: number | string;
-    cashbackAmount?: number | string;
-    shopUrl?: string | null;
-    refereeEmail?: string | null;
-    logoUrl?: string | null;
-    logoAlt?: string | null;
+  firstName?: string | null;
+  lastName?: string | null;
+  code?: string;
+  workshopTitle?: string | null;
+  workshopQuantity?: number | string;
+  expiresAt?: string | null;
+  discountPercentage?: number | string;
+  cashbackAmount?: number | string;
+  shopUrl?: string | null;
+  refereeEmail?: string | null;
+  logoUrl?: string | null;
+  logoAlt?: string | null;
 };
 
 function replaceVariables(template: string, variables: TemplateVariables): string {
-    let result = template;
-    Object.entries(variables).forEach(([key, value]) => {
-        result = result.replace(new RegExp(`\\{\\{${key}\\}\\}`, "g"), String(value ?? ""));
-    });
-    return result;
+  let result = template;
+  Object.entries(variables).forEach(([key, value]) => {
+    result = result.replace(new RegExp(`\\{\\{${key}\\}\\}`, "g"), String(value ?? ""));
+  });
+  return result;
 }
 
 function toPrismaTemplateType(type: EmailTemplateType): PrismaEmailTemplateType {
-    return type as PrismaEmailTemplateType;
+  return type as PrismaEmailTemplateType;
 }
 
 export async function getEmailTemplate(type: EmailTemplateType) {
-    let template = await prisma.emailTemplate.findUnique({ where: { type: toPrismaTemplateType(type) } });
+  let template = await prisma.emailTemplate.findUnique({ where: { type: toPrismaTemplateType(type) } });
 
-    if (!template) {
-        const defaultTemplate = getDefaultTemplate(type);
-        template = await prisma.emailTemplate.create({
-            data: {
-                type: toPrismaTemplateType(type),
-                subject: defaultTemplate.subject,
-                bodyHtml: defaultTemplate.bodyHtml,
-                bodyText: defaultTemplate.bodyText,
-            },
-        });
-    }
+  if (!template) {
+    const defaultTemplate = getDefaultTemplate(type);
+    template = await prisma.emailTemplate.create({
+      data: {
+        type: toPrismaTemplateType(type),
+        subject: defaultTemplate.subject,
+        bodyHtml: defaultTemplate.bodyHtml,
+        bodyText: defaultTemplate.bodyText,
+      },
+    });
+  }
 
-    return template;
+  return template;
 }
 
 export async function upsertEmailTemplate({
-    type,
-    subject,
-    bodyHtml,
-    bodyText,
+  type,
+  subject,
+  bodyHtml,
+  bodyText,
 }: {
-    type: EmailTemplateType;
-    subject: string;
-    bodyHtml: string;
-    bodyText?: string | null;
+  type: EmailTemplateType;
+  subject: string;
+  bodyHtml: string;
+  bodyText?: string | null;
 }) {
-    return prisma.emailTemplate.upsert({
-        where: { type: toPrismaTemplateType(type) },
-        update: {
-            subject,
-            bodyHtml,
-            bodyText: bodyText?.trim() ? bodyText : null,
-        },
-        create: {
-            type: toPrismaTemplateType(type),
-            subject,
-            bodyHtml,
-            bodyText: bodyText?.trim() ? bodyText : null,
-        },
-    });
+  return prisma.emailTemplate.upsert({
+    where: { type: toPrismaTemplateType(type) },
+    update: {
+      subject,
+      bodyHtml,
+      bodyText: bodyText?.trim() ? bodyText : null,
+    },
+    create: {
+      type: toPrismaTemplateType(type),
+      subject,
+      bodyHtml,
+      bodyText: bodyText?.trim() ? bodyText : null,
+    },
+  });
 }
 
 export function getDefaultTemplate(type: EmailTemplateType) {
-    switch (type) {
-        case EmailTemplateType.CODE_PROMO:
-            return {
-                subject: "Votre code de parrainage est prêt !",
-                bodyHtml: `
+  switch (type) {
+    case EmailTemplateType.CODE_PROMO:
+      return {
+        subject: "Votre code de parrainage est prêt !",
+        bodyHtml: `
 <!DOCTYPE html>
 <html lang="fr">
 <head>
@@ -156,26 +156,29 @@ export function getDefaultTemplate(type: EmailTemplateType) {
   </div>
 
   <div class="content">
-    <h1>Bonjour {{firstName}},</h1>
-    <p>Merci d’avoir participé à notre workshop <strong>{{workshopTitle}}</strong>.</p>
+<h1>Hello {{firstName}},</h1>
 
-    <h2>Votre code de parrainage</h2>
-    <div class="code">{{code}}</div>
+<p>We were truly delighted to welcome you to the <strong>{{workshopTitle}}</strong> workshop.</p>
+<p>Thank you for being part of the Venezia Photo community.</p>
 
-    <div class="section">
-      <p>Vos filleuls bénéficient de <strong>{{discountPercentage}}</strong> de réduction.</p>
-      <p>Vous recevez <strong>{{cashbackAmount}}</strong> pour chaque utilisation.</p>
-      <p>Ce code est valable jusqu’au <strong>{{expiresAt}}</strong>.</p>
-    </div>
+<h2>Your referral code</h2>
 
-    <div class="footer">
-      <p>À bientôt,</p>
-      <p>L’équipe Venezia Photo</p>
-    </div>
+<div class="code">{{code}}</div>
+
+<div class="section">
+  <p>Your referred friends will receive <strong>{{discountPercentage}}</strong> off their first purchase, as long as they have never attended a Venezia Photo workshop before.</p>
+  <p>For each successful referral, you will receive <strong>{{cashbackAmount}}</strong> in cashback, valid on your next purchase on our new website and credited directly to the card you originally used.</p>
+  <p>This referral code is valid until <strong>{{expiresAt}}</strong>.</p>
+</div>
+
+<div class="footer">
+  <p>We look forward to welcoming you again very soon,</p>
+  <p>The Venezia Photo Team</p>
+</div>
   </div>
 </body>
 </html>`.trim(),
-                bodyText: `
+        bodyText: `
 Bonjour {{firstName}},
 
 Merci d’avoir participé à notre workshop {{workshopTitle}}.
@@ -189,12 +192,12 @@ Valable jusqu’au {{expiresAt}}.
 À bientôt,
 L’équipe Venezia Photo
 `.trim(),
-            };
+      };
 
-        case EmailTemplateType.CASHBACK_CONFIRMATION:
-            return {
-                subject: "Cashback confirmé !",
-                bodyHtml: `
+    case EmailTemplateType.CASHBACK_CONFIRMATION:
+      return {
+        subject: "Cashback confirmé !",
+        bodyHtml: `
 <!DOCTYPE html>
 <html lang="fr">
 <head>
@@ -256,19 +259,25 @@ L’équipe Venezia Photo
   </div>
 
   <div class="content">
-    <h1>Bonjour {{firstName}},</h1>
-    <h2>Cashback confirmé</h2>
-    <p>Nous avons bien crédité votre compte suite au parrainage de <strong>{{refereeEmail}}</strong>.</p>
-    <div class="highlight">{{cashbackAmount}}</div>
-    <p>Merci pour votre confiance et votre fidélité.</p>
+   <h1>Hello {{firstName}},</h1>
 
-    <div class="footer">
-      <p>L’équipe Venezia Photo</p>
-    </div>
+<h2>Cashback confirmed</h2>
+
+<p>Great news — your cashback has been successfully credited following the referral of <strong>{{refereeEmail}}</strong>.</p>
+
+<div class="highlight">{{cashbackAmount}}</div>
+
+<p>Thank you sincerely for your trust, your support, and your continued commitment to the Venezia Photo community.</p>
+
+<div class="footer">
+  <p>Warm regards,</p>
+  <p>The Venezia Photo Team</p>
+</div>
+
   </div>
 </body>
 </html>`.trim(),
-                bodyText: `
+        bodyText: `
 Bonjour {{firstName}},
 
 Votre cashback de {{cashbackAmount}} a été confirmé pour {{refereeEmail}}.
@@ -276,12 +285,12 @@ Votre cashback de {{cashbackAmount}} a été confirmé pour {{refereeEmail}}.
 Merci pour votre confiance !
 L'équipe Venezia Photo
 `.trim(),
-            };
+      };
 
-        case EmailTemplateType.MANUAL_REFERRER_WELCOME:
-            return {
-                subject: "Bienvenue dans le programme de parrainage",
-                bodyHtml: `
+    case EmailTemplateType.MANUAL_REFERRER_WELCOME:
+      return {
+        subject: "Bienvenue dans le programme de parrainage",
+        bodyHtml: `
 <!DOCTYPE html>
 <html lang="fr">
 <head>
@@ -353,28 +362,29 @@ L'équipe Venezia Photo
   </div>
 
   <div class="content">
-    <h1>Bonjour {{firstName}},</h1>
-    <p>Bienvenue dans le programme de parrainage Venezia Photo.</p>
+  <h1>Hello {{firstName}},</h1>
+<p>Welcome to the Venezia Photo referral program.</p>
 
-    <h2>Votre code personnel</h2>
-    <div class="code">{{code}}</div>
+<h2>Your personal code</h2>
+<div class="code">{{code}}</div>
 
-    <ul>
-      <li>Vos filleuls bénéficient de <strong>{{discountPercentage}}</strong> de réduction</li>
-      <li>Vous recevez <strong>{{cashbackAmount}}</strong> pour chaque inscription validée</li>
-      <li>Code valable jusqu’au <strong>{{expiresAt}}</strong></li>
-    </ul>
+<ul>
+  <li>Your referred friends receive <strong>{{discountPercentage}}</strong> off their purchase</li>
+  <li>You receive <strong>{{cashbackAmount}}</strong> for each successful referral</li>
+  <li>This code is valid until <strong>{{expiresAt}}</strong></li>
+</ul>
 
-    <p>Partagez ce code avec vos proches et faites découvrir nos workshops.</p>
+<p>Share this code with your friends and invite them to discover our workshops.</p>
 
-    <div class="footer">
-      <p>Merci,</p>
-      <p>L’équipe Venezia Photo</p>
-    </div>
+<div class="footer">
+  <p>Thank you,</p>
+  <p>The Venezia Photo Team</p>
+</div>
+
   </div>
 </body>
 </html>`.trim(),
-                bodyText: `
+        bodyText: `
 Bonjour {{firstName}},
 
 Bienvenue dans le programme de parrainage Venezia Photo.
@@ -388,263 +398,263 @@ Partagez ce code avec vos proches et faites découvrir nos workshops.
 
 L’équipe Venezia Photo
 `.trim(),
-            };
+      };
 
-        default:
-            throw new Error(`Type de template inconnu: ${type}`);
-    }
+    default:
+      throw new Error(`Type de template inconnu: ${type}`);
+  }
 }
 
 export async function sendEmail({
-    to,
-    templateType,
-    variables,
-    codeId,
-    referrerId,
+  to,
+  templateType,
+  variables,
+  codeId,
+  referrerId,
 }: {
-    to: string;
-    templateType: EmailTemplateType;
-    variables: TemplateVariables;
-    codeId?: string;
-    referrerId: string;
+  to: string;
+  templateType: EmailTemplateType;
+  variables: TemplateVariables;
+  codeId?: string;
+  referrerId: string;
 }) {
-    if (!process.env.RESEND_API_KEY) {
-        console.warn("⚠️ RESEND_API_KEY non configurée.");
-        return prisma.emailLog.create({
-            data: {
-                referrerId,
-                codeId: codeId ?? null,
-                templateType: toPrismaTemplateType(templateType),
-                recipientEmail: to,
-                subject: "Erreur de configuration",
-                status: EmailStatus.FAILED,
-                errorMessage: "RESEND_API_KEY non configurée",
-            },
-        });
-    }
+  if (!process.env.RESEND_API_KEY) {
+    console.warn("⚠️ RESEND_API_KEY non configurée.");
+    return prisma.emailLog.create({
+      data: {
+        referrerId,
+        codeId: codeId ?? null,
+        templateType: toPrismaTemplateType(templateType),
+        recipientEmail: to,
+        subject: "Erreur de configuration",
+        status: EmailStatus.FAILED,
+        errorMessage: "RESEND_API_KEY non configurée",
+      },
+    });
+  }
 
-    const template = await getEmailTemplate(templateType);
-    const subject = replaceVariables(template.subject, variables);
-    const html = replaceVariables(template.bodyHtml, variables);
-    const text = template.bodyText ? replaceVariables(template.bodyText, variables) : undefined;
+  const template = await getEmailTemplate(templateType);
+  const subject = replaceVariables(template.subject, variables);
+  const html = replaceVariables(template.bodyHtml, variables);
+  const text = template.bodyText ? replaceVariables(template.bodyText, variables) : undefined;
 
-    const log = await prisma.emailLog.create({
-        data: {
-            referrerId,
-            codeId: codeId ?? null,
-            templateType: toPrismaTemplateType(templateType),
-            recipientEmail: to,
-            subject,
-            status: EmailStatus.PENDING,
-        },
+  const log = await prisma.emailLog.create({
+    data: {
+      referrerId,
+      codeId: codeId ?? null,
+      templateType: toPrismaTemplateType(templateType),
+      recipientEmail: to,
+      subject,
+      status: EmailStatus.PENDING,
+    },
+  });
+
+  try {
+    const sent = await resend.emails.send({
+      from: process.env.RESEND_FROM_EMAIL || "onboarding@resend.dev",
+      to,
+      subject,
+      html,
+      text,
     });
 
-    try {
-        const sent = await resend.emails.send({
-            from: process.env.RESEND_FROM_EMAIL || "onboarding@resend.dev",
-            to,
-            subject,
-            html,
-            text,
-        });
-
-        await prisma.emailLog.update({
-            where: { id: log.id },
-            data: { status: EmailStatus.SENT, resendId: sent.data?.id || null, sentAt: new Date() },
-        });
-        return sent;
-    } catch (error) {
-        await prisma.emailLog.update({
-            where: { id: log.id },
-            data: { status: EmailStatus.FAILED, errorMessage: String(error) },
-        });
-        throw error;
-    }
+    await prisma.emailLog.update({
+      where: { id: log.id },
+      data: { status: EmailStatus.SENT, resendId: sent.data?.id || null, sentAt: new Date() },
+    });
+    return sent;
+  } catch (error) {
+    await prisma.emailLog.update({
+      where: { id: log.id },
+      data: { status: EmailStatus.FAILED, errorMessage: String(error) },
+    });
+    throw error;
+  }
 }
 
 export async function sendCashbackConfirmationEmail({
-    referrerId,
-    referrerEmail,
-    firstName,
-    lastName,
-    cashbackAmount,
-    refereeEmail,
+  referrerId,
+  referrerEmail,
+  firstName,
+  lastName,
+  cashbackAmount,
+  refereeEmail,
 }: {
-    referrerId: string;
-    referrerEmail?: string | null;
-    firstName?: string | null;
-    lastName?: string | null;
-    cashbackAmount: number;
-    refereeEmail?: string | null;
+  referrerId: string;
+  referrerEmail?: string | null;
+  firstName?: string | null;
+  lastName?: string | null;
+  cashbackAmount: number;
+  refereeEmail?: string | null;
 }) {
-    if (!referrerEmail) {
-        console.warn(
-            `⚠️ Impossible d'envoyer l'email de confirmation cashback : aucun email pour le parrain ${referrerId}`,
-        );
-        return;
-    }
+  if (!referrerEmail) {
+    console.warn(
+      `⚠️ Impossible d'envoyer l'email de confirmation cashback : aucun email pour le parrain ${referrerId}`,
+    );
+    return;
+  }
 
-    await sendEmail({
-        to: referrerEmail,
-        templateType: EmailTemplateType.CASHBACK_CONFIRMATION,
-        variables: {
-            firstName,
-            lastName,
-            cashbackAmount,
-            refereeEmail,
-            logoUrl: DEFAULT_LOGO_URL,
-            logoAlt: DEFAULT_LOGO_ALT,
-        },
-        referrerId,
-    });
+  await sendEmail({
+    to: referrerEmail,
+    templateType: EmailTemplateType.CASHBACK_CONFIRMATION,
+    variables: {
+      firstName,
+      lastName,
+      cashbackAmount,
+      refereeEmail,
+      logoUrl: DEFAULT_LOGO_URL,
+      logoAlt: DEFAULT_LOGO_ALT,
+    },
+    referrerId,
+  });
 }
 
 type SendPromoCodeEmailParams = {
-    referrerId: string;
-    codeId: string;
-    referrerEmail?: string | null;
-    firstName?: string | null;
-    lastName?: string | null;
-    code: string;
-    workshopTitle?: string | null;
-    workshopQuantity?: number | null;
-    expiresAt?: Date | null;
-    discountPercentage: number;
-    cashbackAmount: number;
-    shopUrl?: string | null;
+  referrerId: string;
+  codeId: string;
+  referrerEmail?: string | null;
+  firstName?: string | null;
+  lastName?: string | null;
+  code: string;
+  workshopTitle?: string | null;
+  workshopQuantity?: number | null;
+  expiresAt?: Date | null;
+  discountPercentage: number;
+  cashbackAmount: number;
+  shopUrl?: string | null;
 };
 
 export async function sendPromoCodeEmail({
+  referrerId,
+  codeId,
+  referrerEmail,
+  firstName,
+  lastName,
+  code,
+  workshopTitle,
+  workshopQuantity,
+  expiresAt,
+  discountPercentage,
+  cashbackAmount,
+  shopUrl,
+}: SendPromoCodeEmailParams) {
+  if (!referrerEmail) {
+    console.warn(
+      `⚠️ Impossible d'envoyer l'email de code promo : aucun email pour le parrain ${referrerId}`,
+    );
+    return;
+  }
+
+  const formattedDiscount =
+    Number.isFinite(discountPercentage) && discountPercentage > 0
+      ? `${(discountPercentage * 100).toFixed(0)}%`
+      : undefined;
+
+  const formattedCashback = Number.isFinite(cashbackAmount)
+    ? new Intl.NumberFormat("fr-FR", {
+      style: "currency",
+      currency: "EUR",
+    }).format(cashbackAmount)
+    : undefined;
+
+  const formattedExpiry =
+    expiresAt instanceof Date
+      ? expiresAt.toLocaleDateString("fr-FR", {
+        year: "numeric",
+        month: "long",
+        day: "numeric",
+      })
+      : null;
+
+  await sendEmail({
+    to: referrerEmail,
+    templateType: EmailTemplateType.CODE_PROMO,
+    variables: {
+      firstName,
+      lastName,
+      code,
+      workshopTitle,
+      workshopQuantity: workshopQuantity ?? undefined,
+      expiresAt: formattedExpiry,
+      discountPercentage: formattedDiscount ?? discountPercentage,
+      cashbackAmount: formattedCashback ?? cashbackAmount,
+      shopUrl: shopUrl ?? undefined,
+      logoUrl: DEFAULT_LOGO_URL,
+      logoAlt: DEFAULT_LOGO_ALT,
+    },
     referrerId,
     codeId,
-    referrerEmail,
-    firstName,
-    lastName,
-    code,
-    workshopTitle,
-    workshopQuantity,
-    expiresAt,
-    discountPercentage,
-    cashbackAmount,
-    shopUrl,
-}: SendPromoCodeEmailParams) {
-    if (!referrerEmail) {
-        console.warn(
-            `⚠️ Impossible d'envoyer l'email de code promo : aucun email pour le parrain ${referrerId}`,
-        );
-        return;
-    }
-
-    const formattedDiscount =
-        Number.isFinite(discountPercentage) && discountPercentage > 0
-            ? `${(discountPercentage * 100).toFixed(0)}%`
-            : undefined;
-
-    const formattedCashback = Number.isFinite(cashbackAmount)
-        ? new Intl.NumberFormat("fr-FR", {
-            style: "currency",
-            currency: "EUR",
-        }).format(cashbackAmount)
-        : undefined;
-
-    const formattedExpiry =
-        expiresAt instanceof Date
-            ? expiresAt.toLocaleDateString("fr-FR", {
-                year: "numeric",
-                month: "long",
-                day: "numeric",
-            })
-            : null;
-
-    await sendEmail({
-        to: referrerEmail,
-        templateType: EmailTemplateType.CODE_PROMO,
-        variables: {
-            firstName,
-            lastName,
-            code,
-            workshopTitle,
-            workshopQuantity: workshopQuantity ?? undefined,
-            expiresAt: formattedExpiry,
-            discountPercentage: formattedDiscount ?? discountPercentage,
-            cashbackAmount: formattedCashback ?? cashbackAmount,
-            shopUrl: shopUrl ?? undefined,
-            logoUrl: DEFAULT_LOGO_URL,
-            logoAlt: DEFAULT_LOGO_ALT,
-        },
-        referrerId,
-        codeId,
-    });
+  });
 }
 
 type SendManualReferrerWelcomeEmailParams = {
-    referrerId: string;
-    referrerEmail?: string | null;
-    firstName?: string | null;
-    lastName?: string | null;
-    code: string;
-    codeId?: string | null;
-    expiresAt?: Date | null;
-    discountPercentage: number;
-    cashbackAmount: number;
-    shopUrl?: string | null;
+  referrerId: string;
+  referrerEmail?: string | null;
+  firstName?: string | null;
+  lastName?: string | null;
+  code: string;
+  codeId?: string | null;
+  expiresAt?: Date | null;
+  discountPercentage: number;
+  cashbackAmount: number;
+  shopUrl?: string | null;
 };
 
 export async function sendManualReferrerWelcomeEmail({
-    referrerId,
-    referrerEmail,
-    firstName,
-    lastName,
-    code,
-    codeId,
-    expiresAt,
-    discountPercentage,
-    cashbackAmount,
-    shopUrl,
+  referrerId,
+  referrerEmail,
+  firstName,
+  lastName,
+  code,
+  codeId,
+  expiresAt,
+  discountPercentage,
+  cashbackAmount,
+  shopUrl,
 }: SendManualReferrerWelcomeEmailParams) {
-    if (!referrerEmail) {
-        console.warn(
-            `⚠️ Impossible d'envoyer l'email de bienvenue parrain : aucun email pour le parrain ${referrerId}`,
-        );
-        return;
-    }
+  if (!referrerEmail) {
+    console.warn(
+      `⚠️ Impossible d'envoyer l'email de bienvenue parrain : aucun email pour le parrain ${referrerId}`,
+    );
+    return;
+  }
 
-    const formattedDiscount =
-        Number.isFinite(discountPercentage) && discountPercentage > 0
-            ? `${(discountPercentage * 100).toFixed(0)}%`
-            : undefined;
+  const formattedDiscount =
+    Number.isFinite(discountPercentage) && discountPercentage > 0
+      ? `${(discountPercentage * 100).toFixed(0)}%`
+      : undefined;
 
-    const formattedCashback = Number.isFinite(cashbackAmount)
-        ? new Intl.NumberFormat("fr-FR", {
-              style: "currency",
-              currency: "EUR",
-          }).format(cashbackAmount)
-        : undefined;
+  const formattedCashback = Number.isFinite(cashbackAmount)
+    ? new Intl.NumberFormat("fr-FR", {
+      style: "currency",
+      currency: "EUR",
+    }).format(cashbackAmount)
+    : undefined;
 
-    const formattedExpiry =
-        expiresAt instanceof Date
-            ? expiresAt.toLocaleDateString("fr-FR", {
-                  year: "numeric",
-                  month: "long",
-                  day: "numeric",
-              })
-            : null;
+  const formattedExpiry =
+    expiresAt instanceof Date
+      ? expiresAt.toLocaleDateString("fr-FR", {
+        year: "numeric",
+        month: "long",
+        day: "numeric",
+      })
+      : null;
 
-    await sendEmail({
-        to: referrerEmail,
-        templateType: EmailTemplateType.MANUAL_REFERRER_WELCOME,
-        variables: {
-            firstName,
-            lastName,
-            code,
-            expiresAt: formattedExpiry,
-            discountPercentage: formattedDiscount ?? discountPercentage,
-            cashbackAmount: formattedCashback ?? cashbackAmount,
-            shopUrl: shopUrl ?? undefined,
-            logoUrl: DEFAULT_LOGO_URL,
-            logoAlt: DEFAULT_LOGO_ALT,
-        },
-        referrerId,
-        codeId: codeId ?? undefined,
-    });
+  await sendEmail({
+    to: referrerEmail,
+    templateType: EmailTemplateType.MANUAL_REFERRER_WELCOME,
+    variables: {
+      firstName,
+      lastName,
+      code,
+      expiresAt: formattedExpiry,
+      discountPercentage: formattedDiscount ?? discountPercentage,
+      cashbackAmount: formattedCashback ?? cashbackAmount,
+      shopUrl: shopUrl ?? undefined,
+      logoUrl: DEFAULT_LOGO_URL,
+      logoAlt: DEFAULT_LOGO_ALT,
+    },
+    referrerId,
+    codeId: codeId ?? undefined,
+  });
 }

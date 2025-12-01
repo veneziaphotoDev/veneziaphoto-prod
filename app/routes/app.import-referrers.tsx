@@ -10,6 +10,7 @@ import {
   Text,
   DataTable,
   ProgressBar,
+  Checkbox,
 } from "@shopify/polaris";
 import { useState, useEffect, useCallback, useRef } from "react";
 
@@ -26,6 +27,7 @@ type ImportRow = {
   email: string;
   firstName?: string;
   lastName?: string;
+  acceptsMarketing: boolean;
   rowNumber: number;
 };
 
@@ -76,6 +78,7 @@ function parseCSV(csvText: string): ImportRow[] {
   const emailIndex = headers.findIndex((h) => h === "email" || h === "e-mail");
   const firstNameIndex = headers.findIndex((h) => h === "prenom" || h === "prénom" || h === "firstname" || h === "first_name");
   const lastNameIndex = headers.findIndex((h) => h === "nom" || h === "lastname" || h === "last_name");
+  const acceptsMarketingIndex = headers.findIndex((h) => h === "accept_marketing" || h === "acceptmarketing" || h === "accept marketing");
 
   if (emailIndex === -1) {
     throw new Error("Le fichier CSV doit contenir une colonne 'email'.");
@@ -93,10 +96,18 @@ function parseCSV(csvText: string): ImportRow[] {
       continue; // Ignorer les lignes sans email
     }
 
+    // Parser acceptsMarketing : true par défaut si colonne absente, sinon parser la valeur
+    let acceptsMarketing = true;
+    if (acceptsMarketingIndex >= 0) {
+      const value = values[acceptsMarketingIndex]?.trim().toLowerCase();
+      acceptsMarketing = value === "true" || value === "1" || value === "yes" || value === "oui" || value === "";
+    }
+
     rows.push({
       email,
       firstName: firstNameIndex >= 0 ? values[firstNameIndex]?.trim() : undefined,
       lastName: lastNameIndex >= 0 ? values[lastNameIndex]?.trim() : undefined,
+      acceptsMarketing,
       rowNumber: i + 1,
     });
   }
@@ -162,6 +173,7 @@ async function processReferrerRow(
           email: row.email,
           firstName: row.firstName || null,
           lastName: row.lastName || null,
+          acceptsMarketing: row.acceptsMarketing,
         },
         session?.shop,
       );
@@ -453,6 +465,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     const firstName = formData.get("firstName") as string | null;
     const lastName = formData.get("lastName") as string | null;
     const rowNumber = formData.get("rowNumber") as string | null;
+    const acceptsMarketingRaw = formData.get("acceptsMarketing") as string | null;
 
     if (!email) {
       return json<ProcessActionData>({ action: "process", error: "L'email est obligatoire." }, { status: 400 });
@@ -461,10 +474,13 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     try {
       const settings = await getReferralSettings();
 
+      const acceptsMarketing = acceptsMarketingRaw === "true" || acceptsMarketingRaw === null;
+
       const row: ImportRow = {
         email: email.trim().toLowerCase(),
         firstName: firstName?.trim() || undefined,
         lastName: lastName?.trim() || undefined,
+        acceptsMarketing,
         rowNumber: rowNumber ? parseInt(rowNumber, 10) : 0,
       };
 
@@ -507,6 +523,15 @@ export default function ImportReferrersPage() {
   const [results, setResults] = useState<Map<number, ImportResult>>(new Map());
   const [isProcessing, setIsProcessing] = useState(false);
   const [currentRowNumber, setCurrentRowNumber] = useState<number | null>(null);
+  
+  // Gérer les checkboxes d'acceptation newsletter (modifiables avant traitement)
+  const updateAcceptsMarketing = useCallback((rowNumber: number, value: boolean) => {
+    setParsedRows((prev) => 
+      prev.map((row) => 
+        row.rowNumber === rowNumber ? { ...row, acceptsMarketing: value } : row
+      )
+    );
+  }, []);
 
   const isSubmitting = navigation.state === "submitting" || parseFetcher.state !== "idle";
 
@@ -645,6 +670,7 @@ export default function ImportReferrersPage() {
       formData.append("email", row.email);
       if (row.firstName) formData.append("firstName", row.firstName);
       if (row.lastName) formData.append("lastName", row.lastName);
+      formData.append("acceptsMarketing", row.acceptsMarketing ? "true" : "false");
       formData.append("rowNumber", row.rowNumber.toString());
       
       processFetcher.submit(formData, {
@@ -682,6 +708,7 @@ export default function ImportReferrersPage() {
         row.email,
         isCurrent ? "⏳" : "⏸️",
         isCurrent ? "Traitement en cours..." : "En attente",
+        row.acceptsMarketing ? "Oui" : "Non",
         "—",
         "—",
         "—",
@@ -694,6 +721,7 @@ export default function ImportReferrersPage() {
       result.email,
       result.success ? "✅" : "❌",
       result.message,
+      row.acceptsMarketing ? "Oui" : "Non",
       result.code || "—",
       result.customerCreated ? "Oui" : "Non",
       result.referrerCreated ? "Oui" : "Non",
@@ -761,11 +789,31 @@ export default function ImportReferrersPage() {
                 </BlockStack>
 
                 {tableRows.length > 0 && (
-                  <DataTable
-                    columnContentTypes={["text", "text", "text", "text", "text", "text", "text", "text", "text"]}
-                    headings={["Email", "Statut", "Message", "Code", "Client créé", "Parrain créé", "Code créé", "Discount créé", "Email envoyé"]}
-                    rows={tableRows}
-                  />
+                  <BlockStack gap="300">
+                    <DataTable
+                      columnContentTypes={["text", "text", "text", "text", "text", "text", "text", "text", "text", "text"]}
+                      headings={["Email", "Statut", "Message", "Newsletter", "Code", "Client créé", "Parrain créé", "Code créé", "Discount créé", "Email envoyé"]}
+                      rows={tableRows}
+                    />
+                    {!isProcessing && parsedRows.length > 0 && processedCount === 0 && (
+                      <BlockStack gap="200">
+                        <Text as="p" variant="bodySm" fontWeight="semibold">
+                          Ajuster l'acceptation de la newsletter (modifiable avant le traitement) :
+                        </Text>
+                        <BlockStack gap="200">
+                          {parsedRows.map((row) => (
+                            <Checkbox
+                              key={row.rowNumber}
+                              label={`${row.email}${row.firstName || row.lastName ? ` (${[row.firstName, row.lastName].filter(Boolean).join(" ")})` : ""}`}
+                              checked={row.acceptsMarketing}
+                              onChange={(value) => updateAcceptsMarketing(row.rowNumber, value)}
+                              disabled={isProcessing}
+                            />
+                          ))}
+                        </BlockStack>
+                      </BlockStack>
+                    )}
+                  </BlockStack>
                 )}
 
                 {!isProcessing && parsedRows.length > 0 && processedCount === 0 && (
@@ -789,16 +837,16 @@ export default function ImportReferrersPage() {
               Importez un fichier CSV contenant les informations des parrains à ajouter.
             </Text>
             <Text as="p" variant="bodySm" tone="subdued">
-              Le fichier CSV doit contenir au minimum une colonne <strong>email</strong>. Les colonnes optionnelles sont <strong>prenom</strong> (ou firstname) et <strong>nom</strong> (ou lastname).
+              Le fichier CSV doit contenir au minimum une colonne <strong>email</strong>. Les colonnes optionnelles sont <strong>prenom</strong> (ou firstname), <strong>nom</strong> (ou lastname) et <strong>accept_marketing</strong> (true/false, par défaut true si absent).
             </Text>
             <Text as="p" variant="bodySm" tone="subdued">
               Exemple de format CSV:
             </Text>
             <Text as="p" variant="bodySm" tone="subdued">
               <code>
-                email,prenom,nom<br />
-                john@example.com,John,Doe<br />
-                jane@example.com,Jane,Smith
+                email,prenom,nom,accept_marketing<br />
+                john@example.com,John,Doe,true<br />
+                jane@example.com,Jane,Smith,false
               </code>
             </Text>
 
