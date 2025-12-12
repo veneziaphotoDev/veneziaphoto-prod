@@ -37,9 +37,26 @@ function parseTemplateType(value: FormDataEntryValue | null): EmailTemplateType 
 }
 
 export const action = async ({ request }: ActionFunctionArgs) => {
-    await authenticate.admin(request);
-
+    // Lire le formData avant l'authentification pour pouvoir gérer les erreurs
     const formData = await request.formData();
+
+    // Gérer l'authentification avec un try/catch pour éviter les redirections automatiques
+    let authResult;
+    try {
+        authResult = await authenticate.admin(request);
+        // Si authenticate.admin retourne une Response (redirection), on la détecte
+        if (authResult instanceof Response) {
+            return json(
+                { error: "Erreur d'authentification. Veuillez vous reconnecter." },
+                { status: 401 }
+            );
+        }
+    } catch (authError) {
+        return json(
+            { error: "Erreur d'authentification. Veuillez vous reconnecter." },
+            { status: 401 }
+        );
+    }
 
     const type = parseTemplateType(formData.get("templateType"));
     const intent = formData.get("intent");
