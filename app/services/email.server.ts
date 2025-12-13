@@ -103,7 +103,6 @@ export function getDefaultTemplate(type: EmailTemplateType) {
       line-height: 1.6;
     }
     .header {
-      background: #000;
       padding: 32px 0;
       text-align: center;
     }
@@ -213,7 +212,7 @@ L’équipe Venezia Photo
       line-height: 1.6;
     }
     .header {
-      background: #000;
+      background: #fff;
       padding: 32px 0;
       text-align: center;
     }
@@ -306,7 +305,7 @@ L'équipe Venezia Photo
       line-height: 1.6;
     }
     .header {
-      background: #000;
+      background: #fff;
       padding: 32px 0;
       text-align: center;
     }
